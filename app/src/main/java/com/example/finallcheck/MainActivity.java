@@ -1,6 +1,9 @@
 package com.example.finallcheck;
 
+import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.Log;
@@ -10,16 +13,19 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import com.vnpay.authentication.VNP_AuthenticationActivity;
-
 import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.Map;
+import java.util.TreeMap;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "VNPAY_APP";
+    private static final int VNPAY_REQUEST_CODE = 1001;
     private EditText edtAmount;
 
     @Override
@@ -38,6 +44,12 @@ public class MainActivity extends AppCompatActivity {
             }
 
             try {
+                // Kiểm tra số thập phân
+                if (amountStr.contains(".") || amountStr.contains(",")) {
+                    Toast.makeText(this, "Số tiền không được chứa phần thập phân", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+
                 long amount = Long.parseLong(amountStr);
                 if (amount <= 0) {
                     Toast.makeText(this, "Số tiền phải lớn hơn 0", Toast.LENGTH_SHORT).show();
@@ -45,59 +57,107 @@ public class MainActivity extends AppCompatActivity {
                 }
                 openVnpaySdk(amount);
             } catch (NumberFormatException e) {
-                Toast.makeText(this, "Số tiền không hợp lệ", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Số tiền không hợp lệ, chỉ nhập số nguyên", Toast.LENGTH_SHORT).show();
             }
         });
     }
 
+    private boolean isNetworkAvailable() {
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
+        return activeNetwork != null && activeNetwork.isConnected();
+    }
+
     private void openVnpaySdk(long amount) {
+        if (!isNetworkAvailable()) {
+            Toast.makeText(this, "Không có kết nối mạng", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         try {
             String txnRef = new SimpleDateFormat("yyyyMMddHHmmss", Locale.getDefault()).format(new Date());
-            long vnpAmount = amount * 100; // Chuyển sang đơn vị VNPay
+            long vnpAmount = amount * 100;
 
-            // Kiểm tra số tiền hợp lệ
-            if (vnpAmount < 100000) {
+            if (vnpAmount < 1000) {
                 Log.e("VNPAY_SDK", "Số tiền quá nhỏ: " + vnpAmount);
-                Toast.makeText(this, "Số tiền tối thiểu là 1,000 VND", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Số tiền tối thiểu là 10 VND", Toast.LENGTH_SHORT).show();
                 return;
             }
 
             String createDate = new SimpleDateFormat("yyyyMMddHHmmss", Locale.getDefault()).format(new Date());
+            String orderInfo = "Thanh toán đơn hàng " + txnRef; // Không encode ở đây, encode sau
 
-            // Mã hóa thông tin để tránh lỗi 97 (Invalid Parameter)
-            String orderInfo = URLEncoder.encode("Thanh toán đơn hàng " + txnRef, StandardCharsets.UTF_8.toString());
-            String returnUrl = URLEncoder.encode("https://sandbox.vnpayment.vn/return_url", StandardCharsets.UTF_8.toString());
+            // Các tham số cần gửi, sắp xếp theo thứ tự alphabet
+            Map<String, String> params = new TreeMap<>();
+            params.put("vnp_Amount", String.valueOf(vnpAmount));
+            params.put("vnp_Command", "pay");
+            params.put("vnp_CreateDate", createDate);
+            params.put("vnp_CurrCode", "VND");
+            params.put("vnp_IpAddr", "127.0.0.1");
+            params.put("vnp_Locale", "vn");
+            params.put("vnp_OrderInfo", orderInfo);
+            params.put("vnp_OrderType", "other");
+            params.put("vnp_ReturnUrl", "https://sandbox.vnpayment.vn/return_url");
+            params.put("vnp_TmnCode", "1VYBIYQP");
+            params.put("vnp_TxnRef", txnRef);
+            params.put("vnp_Version", "2.1.0");
+
+            StringBuilder dataToSign = new StringBuilder();
+            for (Map.Entry<String, String> entry : params.entrySet()) {
+                if (dataToSign.length() > 0) dataToSign.append("&");
+                dataToSign.append(entry.getKey()).append("=").append(URLEncoder.encode(entry.getValue(), "UTF-8"));
+            }
+
+
+            String secretKey = "NOH6MBGNLQL9O9OMMFMZ2AX8NIEP50W1";
+            String vnpSecureHash = hmacSHA512(secretKey, dataToSign.toString());
 
             // Tạo URL thanh toán
-            String paymentUrl = "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
-                    + "?vnp_Version=2.1.0"
-                    + "&vnp_Command=pay"
-                    + "&vnp_TmnCode=LWO9ZUAK"
-                    + "&vnp_Amount=" + vnpAmount
-                    + "&vnp_CurrCode=VND"
-                    + "&vnp_TxnRef=" + txnRef
-                    + "&vnp_OrderInfo=" + orderInfo
-                    + "&vnp_OrderType=other"
-                    + "&vnp_Locale=vn"
-                    + "&vnp_ReturnUrl=" + returnUrl
-                    + "&vnp_IpAddr=127.0.0.1"
-                    + "&vnp_CreateDate=" + createDate;
+            String paymentUrl = "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?" + dataToSign.toString() +
+                    "&vnp_SecureHash=" + vnpSecureHash;
 
             Log.d("VNPAY_SDK", "Payment URL: " + paymentUrl);
 
-            // Gửi Intent đến VNPAY SDK
-            Intent intent = new Intent(this, VNP_AuthenticationActivity.class);
-            intent.putExtra("url", paymentUrl);
-            intent.putExtra("tmn_code", "LWO9ZUAK");
-            intent.putExtra("scheme", "paymentapp");
-            intent.putExtra("is_sandbox", true);
-
+            Intent intent = new Intent(this, PaymentWebViewActivity.class);
+            intent.putExtra("payment_url", paymentUrl);
+            intent.putExtra("amount", String.valueOf(amount));
+            intent.putExtra("txnRef", txnRef);
             startActivity(intent);
         } catch (Exception e) {
             e.printStackTrace();
             Log.e("VNPAY_SDK", "Lỗi tạo URL: " + e.getMessage());
+            Toast.makeText(this, "Có lỗi xảy ra: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
+
+    // Hàm tính HMAC-SHA512
+    private String hmacSHA512(String key, String data) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA512");
+        SecretKeySpec secretKeySpec = new SecretKeySpec(key.getBytes("UTF-8"), "HmacSHA512");
+        mac.init(secretKeySpec);
+        byte[] hash = mac.doFinal(data.getBytes("UTF-8"));
+        StringBuilder hexString = new StringBuilder();
+        for (byte b : hash) {
+            String hex = Integer.toHexString(0xff & b);
+            if (hex.length() == 1) hexString.append('0');
+            hexString.append(hex);
+        }
+        return hexString.toString();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == VNPAY_REQUEST_CODE && data != null) {
+            String responseCode = data.getStringExtra("vnp_ResponseCode");
+            if (responseCode != null) {
+                handlePaymentResult(responseCode);
+            } else {
+                Toast.makeText(this, "Không nhận được kết quả từ VNPay", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
     private void handlePaymentResult(String resultCode) {
         switch (resultCode) {
             case "00":
@@ -114,5 +174,4 @@ public class MainActivity extends AppCompatActivity {
                 break;
         }
     }
-
 }

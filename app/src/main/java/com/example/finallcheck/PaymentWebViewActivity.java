@@ -1,7 +1,10 @@
 package com.example.finallcheck;
 
 import android.annotation.SuppressLint;
+import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
@@ -44,12 +47,19 @@ public class PaymentWebViewActivity extends AppCompatActivity {
             return;
         }
 
+        // Kiểm tra kết nối mạng
+        if (!isNetworkAvailable()) {
+            Toast.makeText(this, "Không có kết nối mạng", Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
+
         Log.d(TAG, "Payment URL: " + paymentUrl);
 
         // Cấu hình WebView
         WebSettings webSettings = webView.getSettings();
-        webSettings.setJavaScriptEnabled(true);  // Bật JavaScript
-        webSettings.setDomStorageEnabled(true);  // Bật DOM Storage
+        webSettings.setJavaScriptEnabled(true);
+        webSettings.setDomStorageEnabled(true);
         webSettings.setLoadWithOverviewMode(true);
         webSettings.setUseWideViewPort(true);
         webSettings.setSupportZoom(true);
@@ -79,16 +89,13 @@ public class PaymentWebViewActivity extends AppCompatActivity {
                 String url = request.getUrl().toString();
                 Log.d(TAG, "URL Loading: " + url);
 
-                // Kiểm tra nếu URL chứa return URL hoặc có các tham số kết quả
                 if (url.contains("sdk.merchantbackapp") ||
                         url.contains("vnp_ResponseCode") ||
                         url.contains("vnp_TransactionStatus")) {
-
                     handlePaymentResult(url);
                     return true;
                 }
 
-                // Kiểm tra nếu URL là scheme đặc biệt (không phải http/https)
                 if (!url.startsWith("http://") && !url.startsWith("https://")) {
                     try {
                         Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
@@ -96,10 +103,10 @@ public class PaymentWebViewActivity extends AppCompatActivity {
                         return true;
                     } catch (Exception e) {
                         Log.e(TAG, "Không thể mở URL: " + url, e);
+                        Toast.makeText(PaymentWebViewActivity.this, "Lỗi khi mở URL", Toast.LENGTH_SHORT).show();
                     }
                 }
 
-                // Tải URL trong WebView
                 view.loadUrl(url);
                 return true;
             }
@@ -109,47 +116,56 @@ public class PaymentWebViewActivity extends AppCompatActivity {
                 super.onPageFinished(view, url);
                 progressBar.setVisibility(View.GONE);
             }
+
+            // Sử dụng phiên bản cũ của onReceivedError
+            @Override
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                super.onReceivedError(view, errorCode, description, failingUrl);
+                Log.e(TAG, "WebView Error: " + description + " (Code: " + errorCode + ") at " + failingUrl);
+                Toast.makeText(PaymentWebViewActivity.this, "Lỗi tải trang: " + description, Toast.LENGTH_SHORT).show();
+            }
         });
 
         // Tải URL thanh toán
         webView.loadUrl(paymentUrl);
     }
 
-    // Xử lý kết quả thanh toán
+    private boolean isNetworkAvailable() {
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
+        return activeNetwork != null && activeNetwork.isConnected();
+    }
+
     private void handlePaymentResult(String url) {
         Log.d(TAG, "Handling payment result: " + url);
-        String resultCode = "error";
+        String resultCode = "payment.error";
 
-        // Phân tích URL để lấy mã kết quả
         Uri uri = Uri.parse(url);
         String responseCode = uri.getQueryParameter("vnp_ResponseCode");
         String transactionStatus = uri.getQueryParameter("vnp_TransactionStatus");
 
         if ("00".equals(responseCode) || "00".equals(transactionStatus)) {
             resultCode = "payment.success";
-        } else if ("24".equals(responseCode)) { // Mã hủy giao dịch
+        } else if ("24".equals(responseCode)) {
             resultCode = "payment.cancelled";
         } else {
             resultCode = "payment.error";
         }
 
-        // Chuyển đến màn hình kết quả
         Intent resultIntent = new Intent(this, ResultActivity.class);
         resultIntent.putExtra("result", resultCode);
         resultIntent.putExtra("amount", amount);
         resultIntent.putExtra("txnRef", txnRef);
-        resultIntent.putExtra("response_url", url); // Để debug nếu cần
+        resultIntent.putExtra("response_url", url);
         startActivity(resultIntent);
         finish();
     }
 
-    // Xử lý nút back
     @Override
     public void onBackPressed() {
         if (webView.canGoBack()) {
             webView.goBack();
         } else {
-            // Hủy giao dịch khi người dùng nhấn back
             Intent resultIntent = new Intent(this, ResultActivity.class);
             resultIntent.putExtra("result", "payment.cancelled");
             resultIntent.putExtra("amount", amount);
